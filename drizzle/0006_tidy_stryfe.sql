@@ -1,0 +1,1 @@
+ALTER TABLE `user_settings` ADD `share_button_mode` varchar(32) DEFAULT 'clipboard' NOT NULL;

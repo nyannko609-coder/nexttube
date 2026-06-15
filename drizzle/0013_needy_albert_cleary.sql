@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `total_donation_amount` int DEFAULT 0 NOT NULL;

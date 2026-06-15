@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: nexttube-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: nexttube
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexttube-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    container_name: nexttube-app
+    environment:
+      DATABASE_URL: mysql://root:root@mysql:3306/nexttube
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: development
+      JWT_SECRET: dev-secret-key
+      YOUTUBE_API_KEY_1: ${YOUTUBE_API_KEY_1}
+    ports:
+      - "3000:3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: pnpm dev
+
+volumes:
+  mysql_data:
+  redis_data:

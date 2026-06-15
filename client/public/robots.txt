@@ -1,0 +1,18 @@
+# NextTube - YouTube代替サイト
+# robots.txt for SEO optimization
+
+User-agent: *
+Allow: /
+Allow: /search
+Allow: /library
+Allow: /watch/
+Disallow: /api/
+Disallow: /admin/
+Disallow: /*.json$
+Disallow: /*.xml$
+
+# Crawl delay
+Crawl-delay: 1
+
+# Sitemap
+Sitemap: https://nexttube.manus.space/sitemap.xml
