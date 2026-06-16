@@ -4,9 +4,18 @@
   "installCommand": "pnpm install",
   "framework": "vite",
   "outputDirectory": "dist/public",
+  "functions": {
+    "dist/index.js": {
+      "runtime": "nodejs20.x"
+    }
+  },
   "rewrites": [
     {
-      "source": "/(?!api).*",
+      "source": "/api/(.*)",
+      "destination": "/dist/index.js"
+    },
+    {
+      "source": "/(?!api|assets|public)(.*)",
       "destination": "/index.html"
     }
   ]
