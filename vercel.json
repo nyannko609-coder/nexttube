@@ -3,14 +3,5 @@
   "devCommand": "pnpm dev",
   "installCommand": "pnpm install",
   "framework": "vite",
-  "outputDirectory": "dist",
-  "env": {
-    "GITHUB_CLIENT_ID": "@github_client_id",
-    "GITHUB_CLIENT_SECRET": "@github_client_secret",
-    "JWT_SECRET": "@jwt_secret",
-    "CALLBACK_URL": "@callback_url",
-    "DATABASE_URL": "@database_url",
-    "REDIS_URL": "@redis_url",
-    "NODE_ENV": "production"
-  }
+  "outputDirectory": "dist"
 }
