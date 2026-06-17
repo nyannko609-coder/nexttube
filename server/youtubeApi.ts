@@ -1,23 +1,27 @@
 import axios from "axios";
 import { cacheVideo, getCachedVideo } from "./videoDb";
 import { swrFetch } from "./swrCache";
+import { ENV } from "./_core/env";
 
 /**
- * YouTube Data API Integration (Using Invidious API)
- * All requests go through Invidious instances with automatic failover
+ * YouTube Data API V3 Integration with Multiple API Keys
+ * Automatically rotates through 24 API keys on error
  */
 
-// Invidious API インスタンスのリスト（公式ドキュメントから）
-const INVIDIOUS_INSTANCES = [
-  'https://inv.nadeko.net',
-  'https://inv.thepixora.com',
-  'https://invidious.tiekoetter.com',
-  'https://yt.chocolatemoo53.com',
-  'https://invidious.f5.si',
-  'https://invidious.nerdvpn.de',
-];
+// Get all available API keys from environment variables
+function getAllApiKeys(): string[] {
+  const keys: string[] = [];
+  for (let i = 1; i <= 24; i++) {
+    const key = (ENV as any)[`youtubeApiKey${i}`];
+    if (key) {
+      keys.push(key);
+    }
+  }
+  return keys;
+}
 
-let currentInstanceIndex = 0;
+let apiKeys = getAllApiKeys();
+let currentKeyIndex = 0;
 const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 interface YouTubeVideo {
@@ -46,22 +50,27 @@ interface SearchResult {
 }
 
 /**
- * 利用可能な Invidious インスタンスを取得
+ * Get the current available API key
  */
-function getAvailableInstance(): string {
-  return INVIDIOUS_INSTANCES[currentInstanceIndex % INVIDIOUS_INSTANCES.length];
+function getCurrentApiKey(): string {
+  if (apiKeys.length === 0) {
+    throw new Error("No YouTube API keys available");
+  }
+  return apiKeys[currentKeyIndex % apiKeys.length];
 }
 
 /**
- * 次の Invidious インスタンスに切り替え
+ * Switch to the next API key
  */
-function switchToNextInstance(): void {
-  currentInstanceIndex++;
-  console.log(`[YouTubeAPI] Switched to Invidious instance: ${getAvailableInstance()}`);
+function switchToNextKey(): void {
+  if (apiKeys.length === 0) return;
+  currentKeyIndex++;
+  const nextKey = getCurrentApiKey();
+  console.log(`[YouTubeAPI] Switched to API key index: ${currentKeyIndex % apiKeys.length}`);
 }
 
 /**
- * Search for videos on YouTube (with SWR caching)
+ * Search for videos on YouTube using YouTube Data API V3
  */
 export async function searchVideos(
   query: string,
@@ -79,64 +88,51 @@ export async function searchVideos(
   return swrFetch(
     cacheKey,
     async () => {
-      try {
-        const instance = getAvailableInstance();
-        const response = await axios.get(`${instance}/api/v1/search`, {
-          params: {
-            q: query,
-            page: pageToken ? parseInt(pageToken) : 1,
-            type: 'video',
-          },
-          timeout: 10000,
-        });
+      let lastError: any = null;
+      const maxRetries = Math.min(apiKeys.length, 3);
 
-        const result = Array.isArray(response.data) ? response.data : response.data.items || [];
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const apiKey = getCurrentApiKey();
+          const response = await axios.get("https://www.googleapis.com/youtube/v3/search", {
+            params: {
+              key: apiKey,
+              q: query,
+              part: "snippet",
+              type: "video",
+              maxResults: Math.min(maxResults, 50),
+              pageToken: pageToken,
+              order: order,
+              regionCode: "JP",
+            },
+            timeout: 10000,
+          });
 
-        const items = result.map((item: any) => {
-          let thumbnailUrl = "";
-          const thumbnails = item.videoThumbnails || [];
-          
-          if (thumbnailQuality === "ultra" || thumbnailQuality === "maxhigh") {
-            thumbnailUrl = thumbnails.find((t: any) => t.quality === 'maxres')?.url ||
-                          thumbnails.find((t: any) => t.quality === 'high')?.url ||
-                          thumbnails.find((t: any) => t.quality === 'medium')?.url ||
-                          thumbnails[0]?.url || "";
-          } else if (thumbnailQuality === "high") {
-            thumbnailUrl = thumbnails.find((t: any) => t.quality === 'high')?.url ||
-                          thumbnails.find((t: any) => t.quality === 'medium')?.url ||
-                          thumbnails[0]?.url || "";
-          } else if (thumbnailQuality === "medium") {
-            thumbnailUrl = thumbnails.find((t: any) => t.quality === 'medium')?.url ||
-                          thumbnails[0]?.url || "";
-          } else {
-            thumbnailUrl = thumbnails[0]?.url || "";
-          }
+          const items = (response.data.items || []).map((item: any) => ({
+            videoId: item.id.videoId,
+            title: item.snippet.title,
+            description: item.snippet.description,
+            channelId: item.snippet.channelId,
+            channelTitle: item.snippet.channelTitle,
+            publishedAt: item.snippet.publishedAt,
+            thumbnailUrl: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url || "",
+          }));
 
           return {
-            videoId: item.videoId,
-            title: item.title,
-            description: item.description,
-            channelId: item.authorId,
-            channelTitle: item.author,
-            publishedAt: new Date(item.published * 1000).toISOString(),
-            thumbnailUrl,
+            items,
+            nextPageToken: response.data.nextPageToken,
+            totalResults: response.data.pageInfo?.totalResults || 0,
           };
-        });
-
-        return {
-          items,
-          nextPageToken: pageToken ? (parseInt(pageToken) + 1).toString() : '2',
-          totalResults: items.length,
-        };
-      } catch (error: any) {
-        console.error("[YouTubeAPI] Search error:", error.message);
-        switchToNextInstance();
-        // Retry with next instance
-        if (currentInstanceIndex % INVIDIOUS_INSTANCES.length !== 0) {
-          return searchVideos(query, maxResults, pageToken, order, thumbnailQuality);
+        } catch (error: any) {
+          lastError = error;
+          console.error(`[YouTubeAPI] Search error on attempt ${attempt + 1}:`, error.message);
+          
+          // Switch to next key on error
+          switchToNextKey();
         }
-        throw error;
       }
+
+      throw lastError || new Error("Failed to search videos after multiple attempts");
     },
     {
       ttl: 600,
@@ -146,7 +142,7 @@ export async function searchVideos(
 }
 
 /**
- * Get video details
+ * Get video details from YouTube Data API V3
  */
 export async function getVideoDetails(videoId: string): Promise<YouTubeVideo | null> {
   // Check cache first
@@ -167,212 +163,288 @@ export async function getVideoDetails(videoId: string): Promise<YouTubeVideo | n
     };
   }
 
-  try {
-    const instance = getAvailableInstance();
-    const response = await axios.get(`${instance}/api/v1/videos/${videoId}`, {
-      timeout: 10000,
-    });
+  let lastError: any = null;
+  const maxRetries = Math.min(apiKeys.length, 3);
 
-    const videoData = response.data;
-
-    if (!videoData) {
-      return null;
-    }
-
-    let channelThumbnailUrl: string | undefined;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const channelInfo = await getChannelInfo(videoData.authorId);
-      channelThumbnailUrl = channelInfo?.thumbnailUrl || videoData.authorThumbnails?.[0]?.url;
-    } catch (error) {
-      console.warn("[YouTubeAPI] Failed to get channel info for thumbnail");
-      channelThumbnailUrl = videoData.authorThumbnails?.[0]?.url;
-    }
-
-    const video: YouTubeVideo = {
-      id: videoData.videoId,
-      title: videoData.title,
-      description: videoData.description,
-      channelId: videoData.authorId,
-      channelTitle: videoData.author,
-      publishedAt: new Date(videoData.published * 1000).toISOString(),
-      thumbnailUrl: videoData.videoThumbnails?.find((t: any) => t.quality === 'high')?.url || videoData.videoThumbnails?.[0]?.url || '',
-      channelThumbnailUrl,
-      viewCount: videoData.viewCount || 0,
-      likeCount: videoData.likeCount || 0,
-      commentCount: videoData.commentCount || 0,
-      duration: videoData.lengthSeconds ? `PT${videoData.lengthSeconds}S` : '',
-    };
-
-    // Cache the video
-    await cacheVideo({
-      videoId: video.id,
-      title: video.title,
-      description: video.description,
-      channelId: video.channelId,
-      channelTitle: video.channelTitle,
-      publishedAt: new Date(videoData.published * 1000),
-      thumbnailUrl: video.thumbnailUrl,
-      viewCount: video.viewCount,
-      likeCount: video.likeCount,
-      commentCount: video.commentCount,
-      duration: video.duration,
-      cacheExpiredAt: new Date(Date.now() + CACHE_EXPIRY_MS),
-    });
-
-    return video;
-  } catch (error: any) {
-    console.error("[YouTubeAPI] Get video details error:", error.message);
-    switchToNextInstance();
-    if (currentInstanceIndex % INVIDIOUS_INSTANCES.length !== 0) {
-      return getVideoDetails(videoId);
-    }
-    throw error;
-  }
-}
-
-/**
- * Get channel info
- */
-export async function getChannelInfo(channelId: string) {
-  try {
-    const instance = getAvailableInstance();
-    const response = await axios.get(`${instance}/api/v1/channels/${channelId}`, {
-      timeout: 10000,
-    });
-
-    const channelData = response.data;
-
-    if (!channelData) {
-      return null;
-    }
-
-    return {
-      id: channelData.authorId,
-      title: channelData.author,
-      description: channelData.description,
-      thumbnailUrl: channelData.authorThumbnails?.[0]?.url || '',
-      subscriberCount: channelData.subscriberCount,
-      viewCount: channelData.viewCount,
-      videoCount: channelData.videoCount,
-    };
-  } catch (error: any) {
-    console.error("[YouTubeAPI] Get channel info error:", error.message);
-    switchToNextInstance();
-    if (currentInstanceIndex % INVIDIOUS_INSTANCES.length !== 0) {
-      return getChannelInfo(channelId);
-    }
-    throw error;
-  }
-}
-
-/**
- * Get video comments
- */
-export async function getVideoComments(videoId: string, maxResults: number = 20, pageToken?: string) {
-  try {
-    const instance = getAvailableInstance();
-    const response = await axios.get(`${instance}/api/v1/comments/${videoId}`, {
-      params: {
-        page: pageToken ? parseInt(pageToken) : 0,
-      },
-      timeout: 10000,
-    });
-
-    const result = Array.isArray(response.data) ? response.data : response.data.items || [];
-
-    return {
-      items: result.map((comment: any) => ({
-        kind: 'youtube#comment',
-        etag: `"${comment.author}"`,
-        id: `${videoId}-${comment.author}`,
-        snippet: {
-          videoId,
-          textDisplay: comment.content,
-          textOriginal: comment.content,
-          authorDisplayName: comment.author,
-          authorProfileImageUrl: comment.authorThumbnail,
-          authorChannelUrl: comment.authorUrl,
-          authorChannelId: { value: comment.authorId },
-          canReply: false,
-          canDelete: false,
-          canLike: true,
-          canUpdate: false,
-          likeCount: comment.likeCount || 0,
-          publishedAt: new Date(comment.published * 1000).toISOString(),
-          updatedAt: new Date(comment.published * 1000).toISOString(),
+      const apiKey = getCurrentApiKey();
+      const response = await axios.get("https://www.googleapis.com/youtube/v3/videos", {
+        params: {
+          key: apiKey,
+          id: videoId,
+          part: "snippet,statistics,contentDetails",
         },
-      })),
-      nextPageToken: pageToken ? (parseInt(pageToken) + 1).toString() : '1',
-    };
-  } catch (error: any) {
-    console.error("[YouTubeAPI] Get comments error:", error.message);
-    switchToNextInstance();
-    if (currentInstanceIndex % INVIDIOUS_INSTANCES.length !== 0) {
-      return getVideoComments(videoId, maxResults, pageToken);
+        timeout: 10000,
+      });
+
+      const videoData = response.data.items?.[0];
+      if (!videoData) {
+        return null;
+      }
+
+      const video: YouTubeVideo = {
+        id: videoData.id,
+        title: videoData.snippet.title,
+        description: videoData.snippet.description,
+        channelId: videoData.snippet.channelId,
+        channelTitle: videoData.snippet.channelTitle,
+        publishedAt: videoData.snippet.publishedAt,
+        thumbnailUrl: videoData.snippet.thumbnails?.high?.url || videoData.snippet.thumbnails?.default?.url || "",
+        viewCount: parseInt(videoData.statistics?.viewCount || "0"),
+        likeCount: parseInt(videoData.statistics?.likeCount || "0"),
+        commentCount: parseInt(videoData.statistics?.commentCount || "0"),
+        duration: videoData.contentDetails?.duration || "",
+      };
+
+      // Cache the video
+      await cacheVideo({
+        videoId: video.id,
+        title: video.title,
+        description: video.description,
+        channelId: video.channelId,
+        channelTitle: video.channelTitle,
+        publishedAt: new Date(video.publishedAt),
+        thumbnailUrl: video.thumbnailUrl,
+        viewCount: video.viewCount,
+        likeCount: video.likeCount,
+        commentCount: video.commentCount,
+        duration: video.duration,
+        cacheExpiredAt: new Date(Date.now() + CACHE_EXPIRY_MS),
+      });
+
+      return video;
+    } catch (error: any) {
+      lastError = error;
+      console.error(`[YouTubeAPI] Get video details error on attempt ${attempt + 1}:`, error.message);
+      switchToNextKey();
     }
-    throw error;
   }
+
+  throw lastError || new Error("Failed to get video details after multiple attempts");
 }
 
 /**
- * Get related videos
+ * Get channel information from YouTube Data API V3
  */
-export async function getRelatedVideos(videoId: string, maxResults: number = 20): Promise<SearchResult[]> {
-  try {
-    const instance = getAvailableInstance();
-    const response = await axios.get(`${instance}/api/v1/videos/${videoId}`, {
-      timeout: 10000,
-    });
+export async function getChannelInfo(channelId: string): Promise<{
+  id: string;
+  title: string;
+  description: string;
+  thumbnailUrl: string;
+  subscriberCount: number;
+  videoCount: number;
+} | null> {
+  let lastError: any = null;
+  const maxRetries = Math.min(apiKeys.length, 3);
 
-    // Get channel videos as related videos
-    const channelVideos = await getChannelVideos(response.data.authorId, maxResults);
-    return channelVideos.items.filter((item: any) => item.videoId !== videoId);
-  } catch (error: any) {
-    console.error("[YouTubeAPI] Get related videos error:", error.message);
-    switchToNextInstance();
-    if (currentInstanceIndex % INVIDIOUS_INSTANCES.length !== 0) {
-      return getRelatedVideos(videoId, maxResults);
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const apiKey = getCurrentApiKey();
+      const response = await axios.get("https://www.googleapis.com/youtube/v3/channels", {
+        params: {
+          key: apiKey,
+          id: channelId,
+          part: "snippet,statistics",
+        },
+        timeout: 10000,
+      });
+
+      const channelData = response.data.items?.[0];
+      if (!channelData) {
+        return null;
+      }
+
+      return {
+        id: channelData.id,
+        title: channelData.snippet.title,
+        description: channelData.snippet.description,
+        thumbnailUrl: channelData.snippet.thumbnails?.default?.url || "",
+        subscriberCount: parseInt(channelData.statistics?.subscriberCount || "0"),
+        videoCount: parseInt(channelData.statistics?.videoCount || "0"),
+      };
+    } catch (error: any) {
+      lastError = error;
+      console.error(`[YouTubeAPI] Get channel info error on attempt ${attempt + 1}:`, error.message);
+      switchToNextKey();
     }
-    throw error;
   }
+
+  throw lastError || new Error("Failed to get channel info after multiple attempts");
 }
 
 /**
- * Get channel videos
+ * Get video comments from YouTube Data API V3
  */
-export async function getChannelVideos(channelId: string, maxResults: number = 20, pageToken?: string): Promise<{
+export async function getVideoComments(
+  videoId: string,
+  maxResults: number = 20,
+  pageToken?: string
+): Promise<{
+  items: any[];
+  nextPageToken?: string;
+}> {
+  let lastError: any = null;
+  const maxRetries = Math.min(apiKeys.length, 3);
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const apiKey = getCurrentApiKey();
+      const response = await axios.get("https://www.googleapis.com/youtube/v3/commentThreads", {
+        params: {
+          key: apiKey,
+          videoId: videoId,
+          part: "snippet",
+          textFormat: "plainText",
+          maxResults: Math.min(maxResults, 20),
+          pageToken: pageToken,
+        },
+        timeout: 10000,
+      });
+
+      const items = (response.data.items || []).map((item: any) => ({
+        id: item.id,
+        videoId: videoId,
+        authorName: item.snippet.topLevelComment.snippet.authorDisplayName,
+        authorProfileImageUrl: item.snippet.topLevelComment.snippet.authorProfileImageUrl,
+        textDisplay: item.snippet.topLevelComment.snippet.textDisplay,
+        likeCount: item.snippet.topLevelComment.snippet.likeCount,
+        publishedAt: item.snippet.topLevelComment.snippet.publishedAt,
+        replyCount: item.snippet.replyCount,
+      }));
+
+      return {
+        items,
+        nextPageToken: response.data.nextPageToken,
+      };
+    } catch (error: any) {
+      lastError = error;
+      console.error(`[YouTubeAPI] Get comments error on attempt ${attempt + 1}:`, error.message);
+      switchToNextKey();
+    }
+  }
+
+  throw lastError || new Error("Failed to get comments after multiple attempts");
+}
+
+/**
+ * Get related videos from YouTube Data API V3
+ */
+export async function getRelatedVideos(
+  videoId: string,
+  maxResults: number = 20,
+  pageToken?: string
+): Promise<{
   items: SearchResult[];
   nextPageToken?: string;
 }> {
-  try {
-    const instance = getAvailableInstance();
-    const response = await axios.get(`${instance}/api/v1/channels/${channelId}/videos`, {
-      params: {
-        page: pageToken ? parseInt(pageToken) : 1,
-      },
-      timeout: 10000,
-    });
+  let lastError: any = null;
+  const maxRetries = Math.min(apiKeys.length, 3);
 
-    const result = Array.isArray(response.data) ? response.data : response.data.items || [];
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const apiKey = getCurrentApiKey();
+      const response = await axios.get("https://www.googleapis.com/youtube/v3/search", {
+        params: {
+          key: apiKey,
+          relatedToVideoId: videoId,
+          part: "snippet",
+          type: "video",
+          maxResults: Math.min(maxResults, 50),
+          pageToken: pageToken,
+        },
+        timeout: 10000,
+      });
 
-    return {
-      items: result.map((item: any) => ({
-        videoId: item.videoId,
-        title: item.title,
-        description: item.description,
-        channelId: item.authorId,
-        channelTitle: item.author,
-        publishedAt: new Date(item.published * 1000).toISOString(),
-        thumbnailUrl: item.videoThumbnails?.find((t: any) => t.quality === 'high')?.url || item.videoThumbnails?.[0]?.url || '',
-      })),
-      nextPageToken: pageToken ? (parseInt(pageToken) + 1).toString() : '2',
-    };
-  } catch (error: any) {
-    console.error("[YouTubeAPI] Get channel videos error:", error.message);
-    switchToNextInstance();
-    if (currentInstanceIndex % INVIDIOUS_INSTANCES.length !== 0) {
-      return getChannelVideos(channelId, maxResults, pageToken);
+      const items = (response.data.items || []).map((item: any) => ({
+        videoId: item.id.videoId,
+        title: item.snippet.title,
+        description: item.snippet.description,
+        channelId: item.snippet.channelId,
+        channelTitle: item.snippet.channelTitle,
+        publishedAt: item.snippet.publishedAt,
+        thumbnailUrl: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url || "",
+      }));
+
+      return {
+        items,
+        nextPageToken: response.data.nextPageToken,
+      };
+    } catch (error: any) {
+      lastError = error;
+      console.error(`[YouTubeAPI] Get related videos error on attempt ${attempt + 1}:`, error.message);
+      switchToNextKey();
     }
-    throw error;
   }
+
+  throw lastError || new Error("Failed to get related videos after multiple attempts");
+}
+
+/**
+ * Get channel videos from YouTube Data API V3
+ */
+export async function getChannelVideos(
+  channelId: string,
+  maxResults: number = 30,
+  pageToken?: string
+): Promise<{
+  items: SearchResult[];
+  nextPageToken?: string;
+}> {
+  let lastError: any = null;
+  const maxRetries = Math.min(apiKeys.length, 3);
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const apiKey = getCurrentApiKey();
+      
+      // First, get the channel's uploads playlist ID
+      const channelResponse = await axios.get("https://www.googleapis.com/youtube/v3/channels", {
+        params: {
+          key: apiKey,
+          id: channelId,
+          part: "contentDetails",
+        },
+        timeout: 10000,
+      });
+
+      const uploadsPlaylistId = channelResponse.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+      if (!uploadsPlaylistId) {
+        return { items: [], nextPageToken: undefined };
+      }
+
+      // Then get the videos from the uploads playlist
+      const videosResponse = await axios.get("https://www.googleapis.com/youtube/v3/playlistItems", {
+        params: {
+          key: apiKey,
+          playlistId: uploadsPlaylistId,
+          part: "snippet",
+          maxResults: Math.min(maxResults, 50),
+          pageToken: pageToken,
+        },
+        timeout: 10000,
+      });
+
+      const items = (videosResponse.data.items || []).map((item: any) => ({
+        videoId: item.snippet.resourceId.videoId,
+        title: item.snippet.title,
+        description: item.snippet.description,
+        channelId: item.snippet.channelId,
+        channelTitle: item.snippet.channelTitle,
+        publishedAt: item.snippet.publishedAt,
+        thumbnailUrl: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url || "",
+      }));
+
+      return {
+        items,
+        nextPageToken: videosResponse.data.nextPageToken,
+      };
+    } catch (error: any) {
+      lastError = error;
+      console.error(`[YouTubeAPI] Get channel videos error on attempt ${attempt + 1}:`, error.message);
+      switchToNextKey();
+    }
+  }
+
+  throw lastError || new Error("Failed to get channel videos after multiple attempts");
 }
