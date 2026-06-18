@@ -2,14 +2,15 @@
   "buildCommand": "pnpm build",
   "devCommand": "pnpm dev",
   "installCommand": "pnpm install",
-  "rewrites": [
+  "outputDirectory": "dist/public",
+  "routes": [
     {
-      "source": "/api/:path*",
-      "destination": "/api/:path*"
+      "src": "/api/(.*)",
+      "dest": "/api/$1"
     },
     {
-      "source": "/:path*",
-      "destination": "/index.html"
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
   ]
 }
