@@ -1,3 +1,5 @@
+console.log('[ENV] Loading environment variables...');
+
 export const ENV = {
   appId: process.env.VITE_APP_ID ?? "",
   cookieSecret: process.env.JWT_SECRET ?? "",
@@ -12,6 +14,16 @@ export const ENV = {
   swrEnabled: process.env.SWR_ENABLED !== 'false',
   frontendUrl: process.env.VITE_FRONTEND_URL ?? `http://localhost:5173`,
   youtubeApiKey1: process.env.YOUTUBE_API_KEY_1 ?? "",
+  // Debug: Log if YouTube API keys are present
+  _debug_youtubeKeys: (() => {
+    const keys = [];
+    for (let i = 1; i <= 24; i++) {
+      const key = (process.env as any)[`YOUTUBE_API_KEY_${i}`];
+      if (key) keys.push(i);
+    }
+    console.log(`[ENV] Found YouTube API keys for indices: ${keys.join(', ')}`);
+    return keys.length;
+  })(),
   youtubeApiKey2: process.env.YOUTUBE_API_KEY_2 ?? "",
   youtubeApiKey3: process.env.YOUTUBE_API_KEY_3 ?? "",
   youtubeApiKey4: process.env.YOUTUBE_API_KEY_4 ?? "",
