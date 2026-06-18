@@ -22,6 +22,7 @@ function getAllApiKeys(): string[] {
 
 let apiKeys = getAllApiKeys();
 let currentKeyIndex = 0;
+console.log(`[YouTubeAPI] Loaded ${apiKeys.length} API keys`);
 const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 interface YouTubeVideo {
@@ -88,12 +89,14 @@ export async function searchVideos(
   return swrFetch(
     cacheKey,
     async () => {
+      console.log(`[YouTubeAPI] Searching for: ${query}, using ${apiKeys.length} API keys`);
       let lastError: any = null;
       const maxRetries = Math.min(apiKeys.length, 3);
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
           const apiKey = getCurrentApiKey();
+          console.log(`[YouTubeAPI] Attempt ${attempt + 1}: Using API key index ${currentKeyIndex % apiKeys.length}`);
           const response = await axios.get("https://www.googleapis.com/youtube/v3/search", {
             params: {
               key: apiKey,
@@ -118,6 +121,7 @@ export async function searchVideos(
             thumbnailUrl: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url || "",
           }));
 
+          console.log(`[YouTubeAPI] Search successful! Found ${items.length} items, total: ${response.data.pageInfo?.totalResults || 0}`);
           return {
             items,
             nextPageToken: response.data.nextPageToken,
