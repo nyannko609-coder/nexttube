@@ -3,9 +3,15 @@
   "devCommand": "pnpm dev",
   "installCommand": "pnpm install",
   "framework": "vite",
-  "functions": {
-    "dist/index.js": {
-      "runtime": "nodejs20.x"
+  "outputDirectory": "dist/public",
+  "rewrites": [
+    {
+      "source": "/api/trpc/:path*",
+      "destination": "/api/trpc"
+    },
+    {
+      "source": "/:path*",
+      "destination": "/index.html"
     }
-  }
+  ]
 }
