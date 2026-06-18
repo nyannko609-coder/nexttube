@@ -3,15 +3,5 @@
   "devCommand": "pnpm dev",
   "installCommand": "pnpm install",
   "framework": "vite",
-  "outputDirectory": "dist/public",
-  "rewrites": [
-    {
-      "source": "/api/trpc/:path*",
-      "destination": "/api/trpc"
-    },
-    {
-      "source": "/:path*",
-      "destination": "/index.html"
-    }
-  ]
+  "outputDirectory": "dist/public"
 }
