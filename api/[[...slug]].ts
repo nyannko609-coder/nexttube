@@ -3,6 +3,12 @@ import fs from "fs";
 import path from "path";
 
 export default async (req: VercelRequest, res: VercelResponse) => {
+  // Don't handle /api/ paths - let them be handled by other API routes
+  if (req.url?.startsWith("/api/")) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+
   // Try to serve static files first
   const filePath = path.join(process.cwd(), "dist/public", req.url === "/" ? "index.html" : req.url);
   
